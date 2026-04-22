@@ -1,0 +1,18 @@
+{
+  "name": "middleware-ptr-mikrotik",
+  "version": "1.0.0",
+  "description": "Servidor Intermedio Blindado para Grupo Olmedo",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "node-routeros": "^1.5.0"
+  },
+  "engines": {
+    "node": "18.x"
+  }
+}

@@ -31,13 +31,20 @@ const verificarGafetePTR = (req, res, next) => {
 // ============================================================================
 // 2. MOTOR DE CONEXIÓN DINÁMICA (MULTI-ANTENA)
 // ============================================================================
-// Ahora recibe la IP objetivo directamente desde La Matriz
 const conectarMikroTik = (ipObjetivo) => {
+    // Dividimos el string para ver si trae puerto (ej: "201.x.x.x:8713")
+    const partes = ipObjetivo.split(':');
+    const host = partes[0];
+    // Si trae puerto, lo usamos; si no, usamos el de las variables de entorno
+    const puerto = partes[1] ? parseInt(partes[1], 10) : (parseInt(process.env.MIKROTIK_PORT, 10) || 8728);
+
+    console.log(`[MATRIZ PTR] Intentando conectar a: ${host} | Puerto: ${puerto}`);
+
     return new RouterOSAPI({
-        host: ipObjetivo, // La IP de la antena que nos indique Titán
-        user: process.env.MIKROTIK_USER, // Usuario estándar de la empresa
-        password: process.env.MIKROTIK_PASSWORD, // Contraseña estándar maestra
-        port: Number(process.env.MIKROTIK_PORT) || 8728
+        host: host,
+        user: process.env.MIKROTIK_USER,
+        password: process.env.MIKROTIK_PASSWORD,
+        port: puerto
     });
 };
 

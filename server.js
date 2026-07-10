@@ -113,6 +113,47 @@ app.post('/api/mikrotik/reactivar', verificarGafetePTR, async (req, res) => {
     }
 });
 
+// ============================================================================
+// D) ENDPOINT: TELEMETRÍA DEL DASHBOARD
+// ============================================================================
+app.post('/api/mikrotik/status', verificarGafetePTR, async (req, res) => {
+    const { ipRouter } = req.body;
+    
+    if (!ipRouter) {
+        return res.status(400).json({ estatus: 'error', mensaje: 'Faltan datos (IP del Router)' });
+    }
+
+    const conn = conectarMikroTik(ipRouter);
+
+    try {
+        await conn.connect();
+        
+        // Extraemos los recursos del sistema (CPU, RAM, Temp)
+        const recursos = await conn.write('/system/resource/print');
+        conn.close();
+
+        const data = recursos[0];
+
+        // MikroTik entrega la RAM en bytes, la convertimos a porcentaje
+        const totalRam = parseInt(data['total-memory']);
+        const freeRam = parseInt(data['free-memory']);
+        const porcentajeRam = ((totalRam - freeRam) / totalRam * 100).toFixed(1);
+
+        res.json({
+            estatus: 'exito',
+            data: {
+                cpu: data['cpu-load'],
+                ram: porcentajeRam,
+                temp: data['temperature'] || 0, // En caso de que el router no tenga sensor
+                rx: 0 // Placeholder
+            }
+        });
+
+    } catch (error) {
+        console.error("[ERROR TELEMETRÍA]:", error.message);
+        res.status(500).json({ estatus: 'error', mensaje: `Falla al conectar con la antena ${ipRouter}.` });
+    }
+});
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`[MATRIZ PTR] Servidor Middleware operando en el puerto ${PORT}`);

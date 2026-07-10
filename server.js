@@ -114,7 +114,7 @@ app.post('/api/mikrotik/reactivar', verificarGafetePTR, async (req, res) => {
 });
 
 // ============================================================================
-// D) ENDPOINT: TELEMETRÍA DEL DASHBOARD
+// D) ENDPOINT: TELEMETRÍA DEL DASHBOARD (VERSIÓN SENSORES)
 // ============================================================================
 app.post('/api/mikrotik/status', verificarGafetePTR, async (req, res) => {
     const { ipRouter } = req.body;
@@ -128,8 +128,27 @@ app.post('/api/mikrotik/status', verificarGafetePTR, async (req, res) => {
     try {
         await conn.connect();
         
-        // Extraemos los recursos del sistema (CPU, RAM, Temp)
+        // 1. Extraemos los recursos del sistema (CPU, RAM)
         const recursos = await conn.write('/system/resource/print');
+        
+        // 2. Extraemos los sensores de hardware (Temperatura para CCR2116 / RouterOS v7)
+        let temperaturaReal = 0;
+        try {
+            const salud = await conn.write('/system/health/print');
+            if (salud && salud.length > 0) {
+                // En RouterOS v7 viene como una lista de sensores (ej. name: 'cpu-temperature', value: '45')
+                const sensorTemp = salud.find(s => s.name && s.name.includes('temperature'));
+                if (sensorTemp) {
+                    temperaturaReal = parseFloat(sensorTemp.value);
+                } else if (salud[0].temperature) {
+                    // Respaldo para versiones antiguas de MikroTik
+                    temperaturaReal = parseFloat(salud[0].temperature);
+                }
+            }
+        } catch (errorSensores) {
+            console.warn("No se pudo leer el sensor de temperatura:", errorSensores.message);
+        }
+
         conn.close();
 
         const data = recursos[0];
@@ -144,8 +163,8 @@ app.post('/api/mikrotik/status', verificarGafetePTR, async (req, res) => {
             data: {
                 cpu: data['cpu-load'],
                 ram: porcentajeRam,
-                temp: data['temperature'] || 0, // En caso de que el router no tenga sensor
-                rx: 0 // Placeholder
+                temp: temperaturaReal, 
+                rx: 0 // Placeholder para tráfico futuro
             }
         });
 

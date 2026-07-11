@@ -138,12 +138,14 @@ app.post('/api/mikrotik/status', verificarGafetePTR, async (req, res) => {
             }
         } catch (e) { console.warn("Aviso Temperatura:", e.message); }
 
-        // --- 2. LECTURA DE CLIENTES PPPoE ---
+        // --- 2. LECTURA DE CLIENTES (SIMPLE QUEUES / IPs ESTÁTICAS) ---
         let totalPPPoE = 0;
         try {
-            const pppActivos = await conn.write('/ppp/active/print');
-            totalPPPoE = pppActivos.length;
-        } catch (e) { console.warn("Aviso PPPoE:", e.message); }
+            // Ya que usan IPs estáticas, contamos las reglas de Simple Queue
+            // (Descontamos 1 asumiendo que MikroTik siempre tiene una cola global por defecto)
+            const colasSimples = await conn.write('/queue/simple/print');
+            totalPPPoE = colasSimples.length > 0 ? colasSimples.length : 0;
+        } catch (e) { console.warn("Aviso Clientes (Queues):", e.message); }
 
         // --- 3. LECTURA DE TRÁFICO (SOPORTA MÚLTIPLES PUERTOS SEPARADOS POR COMA) ---
         let sumaRxBits = 0;

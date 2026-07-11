@@ -138,14 +138,20 @@ app.post('/api/mikrotik/status', verificarGafetePTR, async (req, res) => {
             }
         } catch (e) { console.warn("Aviso Temperatura:", e.message); }
 
-        // --- 2. LECTURA DE CLIENTES (SIMPLE QUEUES / IPs ESTÁTICAS) ---
-        let totalPPPoE = 0;
-        try {
-            // Ya que usan IPs estáticas, contamos las reglas de Simple Queue
-            // (Descontamos 1 asumiendo que MikroTik siempre tiene una cola global por defecto)
-            const colasSimples = await conn.write('/queue/simple/print');
-            totalPPPoE = colasSimples.length > 0 ? colasSimples.length : 0;
-        } catch (e) { console.warn("Aviso Clientes (Queues):", e.message); }
+       // --- 2. LECTURA DE CLIENTES (IPs ESTÁTICAS ACTIVAS VÍA ARP) ---
+       let totalPPPoE = 0; // Se llama PPPoE por compatibilidad con la App, pero cuenta IPs Activas
+       try {
+           // Le pedimos al router la tabla ARP (Equipos físicamente comunicándose)
+           const arpTable = await conn.write('/ip/arp/print');
+           
+           // Filtramos un poco para ser precisos (opcional, pero buena práctica)
+           // Filtramos las entradas "inválidas" o "completas" para contar solo los dispositivos reales
+           const activosReales = arpTable.filter(entrada => entrada.invalid !== 'true');
+           
+           totalPPPoE = activosReales.length;
+       } catch (e) { 
+           console.warn("Aviso Clientes (ARP):", e.message); 
+       }
 
         // --- 3. LECTURA DE TRÁFICO (SOPORTA MÚLTIPLES PUERTOS SEPARADOS POR COMA) ---
         let sumaRxBits = 0;

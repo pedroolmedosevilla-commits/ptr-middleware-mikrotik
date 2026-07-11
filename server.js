@@ -114,46 +114,66 @@ app.post('/api/mikrotik/reactivar', verificarGafetePTR, async (req, res) => {
 });
 
 // ============================================================================
-// D) ENDPOINT: TELEMETRÍA DEL DASHBOARD (VERSIÓN SENSORES)
+// D) ENDPOINT: TELEMETRÍA DEL DASHBOARD (MULTI-PUERTO BLINDADO)
 // ============================================================================
 app.post('/api/mikrotik/status', verificarGafetePTR, async (req, res) => {
-    const { ipRouter } = req.body;
-    
-    if (!ipRouter) {
-        return res.status(400).json({ estatus: 'error', mensaje: 'Faltan datos (IP del Router)' });
-    }
+    // AHORA EL SERVIDOR RECIBE EL PUERTO DINÁMICO DESDE LA APP
+    const { ipRouter, puertoWan = 'ether1' } = req.body; 
+    if (!ipRouter) return res.status(400).json({ estatus: 'error', mensaje: 'Faltan datos' });
 
     const conn = conectarMikroTik(ipRouter);
 
     try {
         await conn.connect();
         
-        // 1. Extraemos los recursos del sistema (CPU, RAM)
         const recursos = await conn.write('/system/resource/print');
         
-        // 2. Extraemos los sensores de hardware (Temperatura para CCR2116 / RouterOS v7)
+        // --- 1. LECTURA DE TEMPERATURA ---
         let temperaturaReal = 0;
         try {
             const salud = await conn.write('/system/health/print');
             if (salud && salud.length > 0) {
-                // En RouterOS v7 viene como una lista de sensores (ej. name: 'cpu-temperature', value: '45')
                 const sensorTemp = salud.find(s => s.name && s.name.includes('temperature'));
-                if (sensorTemp) {
-                    temperaturaReal = parseFloat(sensorTemp.value);
-                } else if (salud[0].temperature) {
-                    // Respaldo para versiones antiguas de MikroTik
-                    temperaturaReal = parseFloat(salud[0].temperature);
-                }
+                temperaturaReal = sensorTemp ? parseFloat(sensorTemp.value) : (salud[0].temperature ? parseFloat(salud[0].temperature) : 0);
             }
-        } catch (errorSensores) {
-            console.warn("No se pudo leer el sensor de temperatura:", errorSensores.message);
+        } catch (e) { console.warn("Aviso Temperatura:", e.message); }
+
+        // --- 2. LECTURA DE CLIENTES PPPoE ---
+        let totalPPPoE = 0;
+        try {
+            const pppActivos = await conn.write('/ppp/active/print');
+            totalPPPoE = pppActivos.length;
+        } catch (e) { console.warn("Aviso PPPoE:", e.message); }
+
+        // --- 3. LECTURA DE TRÁFICO (SOPORTA MÚLTIPLES PUERTOS SEPARADOS POR COMA) ---
+        let sumaRxBits = 0;
+        const puertos = puertoWan.split(','); // Separa los puertos inteligentemente
+        
+        for (const puerto of puertos) {
+            const nombrePuerto = puerto.trim(); // Quita espacios extra por si acaso
+            if(!nombrePuerto) continue;
+            
+            try {
+                const traffic = await conn.write('/interface/monitor-traffic', [
+                    `=interface=${nombrePuerto}`,
+                    '=once='
+                ]);
+                
+                if (traffic && traffic.length > 0) {
+                    sumaRxBits += parseFloat(traffic[0]['rx-bits-per-second']) || 0;
+                }
+            } catch (e) { 
+                // SI ALGO FALLA, LE AVISARÁ A FER EXACTAMENTE QUÉ PUERTO ESTÁ MAL ESCRITO
+                console.warn(`Aviso Tráfico [Puerto: ${nombrePuerto}]:`, e.message); 
+            }
         }
+        
+        const traficoRx = (sumaRxBits / 1000000).toFixed(1); // Convierte a Mbps
 
         conn.close();
 
+        // --- 4. CÁLCULO DE RAM ---
         const data = recursos[0];
-
-        // MikroTik entrega la RAM en bytes, la convertimos a porcentaje
         const totalRam = parseInt(data['total-memory']);
         const freeRam = parseInt(data['free-memory']);
         const porcentajeRam = ((totalRam - freeRam) / totalRam * 100).toFixed(1);
@@ -164,13 +184,14 @@ app.post('/api/mikrotik/status', verificarGafetePTR, async (req, res) => {
                 cpu: data['cpu-load'],
                 ram: porcentajeRam,
                 temp: temperaturaReal, 
-                rx: 0 // Placeholder para tráfico futuro
+                rx: traficoRx,
+                activos: totalPPPoE
             }
         });
 
     } catch (error) {
-        console.error("[ERROR TELEMETRÍA]:", error.message);
-        res.status(500).json({ estatus: 'error', mensaje: `Falla al conectar con la antena ${ipRouter}.` });
+        console.error("Error Crítico de Conexión:", error.message);
+        res.status(500).json({ estatus: 'error', mensaje: `Falla al conectar.` });
     }
 });
 const PORT = process.env.PORT || 3000;

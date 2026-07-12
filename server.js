@@ -155,29 +155,26 @@ app.post('/api/mikrotik/status', verificarGafetePTR, async (req, res) => {
             if(!nombrePuerto) continue;
             
             try {
-                // CAMBIO MAESTRO: En lugar de 'monitor-traffic', pedimos las estadísticas actuales
-                const stats = await conn.write('/interface/print', [
-                    '?name=' + nombrePuerto,
-                    '=stats='
+                // 1. Pedimos el tráfico una vez de forma rápida y segura
+                let traffic = await conn.write('/interface/monitor-traffic', [
+                    `=interface=${nombrePuerto}`,
+                    '=once='
                 ]);
                 
-                if (stats && stats.length > 0) {
-                    // MikroTik devuelve 'rx-byte', lo multiplicamos por 8 para tener bits.
-                    // Nota: Esta es una lectura bruta, por lo que para una lectura 'en vivo' 
-                    // la mejor opción es usar monitor-traffic pero dejando que corra un poco.
-                    // Para evitar complicar el backend con delays, volveremos a monitor-traffic
-                    // pero pidiéndole al MikroTik que no espere el 'once', sino que devuelva el último valor del caché
-                    
-                    const traffic = await conn.write('/interface/monitor-traffic', [
+                let rxBits = traffic && traffic.length > 0 ? (parseFloat(traffic[0]['rx-bits-per-second']) || 0) : 0;
+
+                // 🔥 EL PARCHE MAESTRO (Doble Toque): Si el MikroTik nos escupe un 0 prematuro 
+                // por el micro-retraso, esperamos 200 milisegundos exactos y reconfirmamos.
+                if (rxBits === 0) {
+                    await new Promise(resolve => setTimeout(resolve, 200));
+                    traffic = await conn.write('/interface/monitor-traffic', [
                         `=interface=${nombrePuerto}`,
-                        '=once=',
-                        '=duration=1' // 🔥 EL SECRETO: Le decimos al MikroTik que piense por 1 segundo antes de escupir el dato
+                        '=once='
                     ]);
-                    
-                    if (traffic && traffic.length > 0) {
-                        sumaRxBits += parseFloat(traffic[0]['rx-bits-per-second']) || 0;
-                    }
+                    rxBits = traffic && traffic.length > 0 ? (parseFloat(traffic[0]['rx-bits-per-second']) || 0) : 0;
                 }
+                
+                sumaRxBits += rxBits;
             } catch (error) {
                 console.warn(`Aviso Tráfico [Puerto: ${nombrePuerto}]:`, error.message);
             }

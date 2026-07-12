@@ -276,6 +276,9 @@ app.post('/api/antenas/status', verificarGafetePTR, (req, res) => {
         res.json({ estatus: 'exito', datos: datosAntena });
     });
 });
+// === DECLARAMOS EL PUERTO PARA QUE RENDER LO INYECTE ===
+const PORT = process.env.PORT || 3000;
+
 app.listen(PORT, () => {
     console.log(`[MATRIZ PTR] Servidor Middleware operando en el puerto ${PORT}`);
 });

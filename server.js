@@ -206,7 +206,11 @@ app.post('/api/mikrotik/status', verificarGafetePTR, async (req, res) => {
 
     } catch (error) {
         console.error("Error Crítico de Conexión:", error.message);
-        // AQUÍ ESTÁ EL PARCHE MAESTRO: Enviamos 200 en lugar de 500 para no romper el frontend.
+        
+        // 🔥 EL SEGURO DE VIDA: Forzamos el cierre de la conexión fantasma aunque haya fallado, 
+        // para que MikroTik no nos bloquee por exceso de sesiones.
+        try { if(conn) conn.close(); } catch(e) {}
+        
         res.status(200).json({ estatus: 'error', mensaje: 'Falla al conectar.' });
     }
 });

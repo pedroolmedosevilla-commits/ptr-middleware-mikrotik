@@ -10,6 +10,7 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const { RouterOSAPI } = require('node-routeros');
+const snmp = require('net-snmp');
 
 const app = express();
 app.use(express.json());
@@ -117,7 +118,6 @@ app.post('/api/mikrotik/reactivar', verificarGafetePTR, async (req, res) => {
 // D) ENDPOINT: TELEMETRÍA DEL DASHBOARD (MULTI-PUERTO BLINDADO)
 // ============================================================================
 app.post('/api/mikrotik/status', verificarGafetePTR, async (req, res) => {
-    // AHORA EL SERVIDOR RECIBE EL PUERTO DINÁMICO DESDE LA APP
     const { ipRouter, puertoWan = 'ether1' } = req.body; 
     if (!ipRouter) return res.status(400).json({ estatus: 'error', mensaje: 'Faltan datos' });
 
@@ -139,26 +139,19 @@ app.post('/api/mikrotik/status', verificarGafetePTR, async (req, res) => {
         } catch (e) { console.warn("Aviso Temperatura:", e.message); }
 
        // --- 2. LECTURA DE CLIENTES (IPs ESTÁTICAS ACTIVAS VÍA ARP) ---
-       let totalPPPoE = 0; // Se llama PPPoE por compatibilidad con la App, pero cuenta IPs Activas
+       let totalPPPoE = 0;
        try {
-           // Le pedimos al router la tabla ARP (Equipos físicamente comunicándose)
            const arpTable = await conn.write('/ip/arp/print');
-           
-           // Filtramos un poco para ser precisos (opcional, pero buena práctica)
-           // Filtramos las entradas "inválidas" o "completas" para contar solo los dispositivos reales
            const activosReales = arpTable.filter(entrada => entrada.invalid !== 'true');
-           
            totalPPPoE = activosReales.length;
-       } catch (e) { 
-           console.warn("Aviso Clientes (ARP):", e.message); 
-       }
+       } catch (e) { console.warn("Aviso Clientes (ARP):", e.message); }
 
-        // --- 3. LECTURA DE TRÁFICO (SOPORTA MÚLTIPLES PUERTOS SEPARADOS POR COMA) ---
+        // --- 3. LECTURA DE TRÁFICO (SOPORTA MÚLTIPLES PUERTOS) ---
         let sumaRxBits = 0;
-        const puertos = puertoWan.split(','); // Separa los puertos inteligentemente
+        const puertos = puertoWan.split(',');
         
         for (const puerto of puertos) {
-            const nombrePuerto = puerto.trim(); // Quita espacios extra por si acaso
+            const nombrePuerto = puerto.trim();
             if(!nombrePuerto) continue;
             
             try {
@@ -170,13 +163,13 @@ app.post('/api/mikrotik/status', verificarGafetePTR, async (req, res) => {
                 if (traffic && traffic.length > 0) {
                     sumaRxBits += parseFloat(traffic[0]['rx-bits-per-second']) || 0;
                 }
-            } catch (e) { 
-                // SI ALGO FALLA, LE AVISARÁ A FER EXACTAMENTE QUÉ PUERTO ESTÁ MAL ESCRITO
-                console.warn(`Aviso Tráfico [Puerto: ${nombrePuerto}]:`, e.message); 
+            } catch (error) {
+                // PARCHE: Solo avisamos en consola, no enviamos "res.status" aquí para evitar que choque con la respuesta final.
+                console.warn(`Aviso Tráfico [Puerto: ${nombrePuerto}]:`, error.message);
             }
         }
         
-        const traficoRx = (sumaRxBits / 1000000).toFixed(1); // Convierte a Mbps
+        const traficoRx = (sumaRxBits / 1000000).toFixed(1);
 
         conn.close();
 
@@ -199,10 +192,76 @@ app.post('/api/mikrotik/status', verificarGafetePTR, async (req, res) => {
 
     } catch (error) {
         console.error("Error Crítico de Conexión:", error.message);
-        res.status(500).json({ estatus: 'error', mensaje: `Falla al conectar.` });
+        // AQUÍ ESTÁ EL PARCHE MAESTRO: Enviamos 200 en lugar de 500 para no romper el frontend.
+        res.status(200).json({ estatus: 'error', mensaje: 'Falla al conectar.' });
     }
 });
-const PORT = process.env.PORT || 3000;
+// ============================================================================
+// E) ENDPOINT: LECTURA HÍBRIDA DE ANTENAS (MULTI-MARCA SNMP)
+// ============================================================================
+app.post('/api/antenas/status', verificarGafetePTR, (req, res) => {
+    // AHORA RECIBIMOS LA MARCA DESDE EL DASHBOARD (Por defecto Ubiquiti)
+    const { ipAntena, comunidad = 'public', marca = 'ubiquiti' } = req.body;
+
+    if (!ipAntena) {
+        return res.status(400).json({ estatus: 'error', mensaje: 'Falta la IP de la Antena.' });
+    }
+
+    const session = snmp.createSession(ipAntena, comunidad, {
+        port: 161, retries: 1, timeout: 3000, version: snmp.Version1
+    });
+
+    // === EL DICCIONARIO DE GOBERNANZA (OIDs por fabricante) ===
+    const diccionarioOIDs = {
+        ubiquiti: {
+            nombre: "1.3.6.1.2.1.1.5.0",             
+            ccq: "1.3.6.1.4.1.41112.1.4.5.1.7.1",    
+            senal: "1.3.6.1.4.1.41112.1.4.5.1.5.1",  
+            ruido: "1.3.6.1.4.1.41112.1.4.5.1.8.1"   
+        },
+        mimosa: {
+            nombre: "1.3.6.1.2.1.1.5.0",             // Universal
+            ccq: "1.3.6.1.4.1.43356.2.1.2.9.1.2",    // *Fer: Reemplazar con el OID real de Mimosa
+            senal: "1.3.6.1.4.1.43356.2.1.2.9.1.3",  // *Fer: Reemplazar con el OID real de Mimosa
+            ruido: "1.3.6.1.4.1.43356.2.1.2.9.1.4"   // *Fer: Reemplazar con el OID real de Mimosa
+        },
+        cambium: {
+            nombre: "1.3.6.1.2.1.1.5.0",             // Universal
+            ccq: "1.3.6.1.4.1.161.19.3.2.2.19.0",    // *Fer: Reemplazar con el OID real de Cambium
+            senal: "1.3.6.1.4.1.161.19.3.2.2.22.0",  // *Fer: Reemplazar con el OID real de Cambium
+            ruido: "1.3.6.1.4.1.161.19.3.2.2.21.0"   // *Fer: Reemplazar con el OID real de Cambium
+        }
+    };
+
+    // Seleccionamos los OIDs dependiendo de la marca que mandó el Dashboard
+    const oidsUsar = diccionarioOIDs[marca.toLowerCase()] || diccionarioOIDs['ubiquiti'];
+    const oidsArray = [oidsUsar.nombre, oidsUsar.ccq, oidsUsar.senal, oidsUsar.ruido];
+
+    session.get(oidsArray, (error, varbinds) => {
+        if (error) {
+            session.close();
+            return res.status(500).json({ estatus: 'error', mensaje: `Falla SNMP: ${error.toString()}` });
+        }
+
+        let datosAntena = { nombre: 'Desconocido', ccq: 0, senal: 0, ruido: 0 };
+        
+        for (let i = 0; i < varbinds.length; i++) {
+            if (!snmp.isVarbindError(varbinds[i])) {
+                let valor = varbinds[i].value;
+                if (Buffer.isBuffer(valor)) valor = valor.toString();
+                
+                // Hacemos match con el diccionario
+                if (varbinds[i].oid === oidsUsar.nombre) datosAntena.nombre = valor;
+                if (varbinds[i].oid === oidsUsar.ccq) datosAntena.ccq = parseInt(valor) || 0;
+                if (varbinds[i].oid === oidsUsar.senal) datosAntena.senal = parseInt(valor) || 0;
+                if (varbinds[i].oid === oidsUsar.ruido) datosAntena.ruido = parseInt(valor) || 0;
+            }
+        }
+
+        session.close();
+        res.json({ estatus: 'exito', datos: datosAntena });
+    });
+});
 app.listen(PORT, () => {
     console.log(`[MATRIZ PTR] Servidor Middleware operando en el puerto ${PORT}`);
 });

@@ -146,7 +146,7 @@ app.post('/api/mikrotik/status', verificarGafetePTR, async (req, res) => {
            totalPPPoE = activosReales.length;
        } catch (e) { console.warn("Aviso Clientes (ARP):", e.message); }
 
-        // --- 3. LECTURA DE TRÁFICO (SOPORTA MÚLTIPLES PUERTOS) ---
+        // --- 3. LECTURA DE TRÁFICO (VÍA ESTADÍSTICAS SEGURAS) ---
         let sumaRxBits = 0;
         const puertos = puertoWan.split(',');
         
@@ -155,16 +155,30 @@ app.post('/api/mikrotik/status', verificarGafetePTR, async (req, res) => {
             if(!nombrePuerto) continue;
             
             try {
-                const traffic = await conn.write('/interface/monitor-traffic', [
-                    `=interface=${nombrePuerto}`,
-                    '=once='
+                // CAMBIO MAESTRO: En lugar de 'monitor-traffic', pedimos las estadísticas actuales
+                const stats = await conn.write('/interface/print', [
+                    '?name=' + nombrePuerto,
+                    '=stats='
                 ]);
                 
-                if (traffic && traffic.length > 0) {
-                    sumaRxBits += parseFloat(traffic[0]['rx-bits-per-second']) || 0;
+                if (stats && stats.length > 0) {
+                    // MikroTik devuelve 'rx-byte', lo multiplicamos por 8 para tener bits.
+                    // Nota: Esta es una lectura bruta, por lo que para una lectura 'en vivo' 
+                    // la mejor opción es usar monitor-traffic pero dejando que corra un poco.
+                    // Para evitar complicar el backend con delays, volveremos a monitor-traffic
+                    // pero pidiéndole al MikroTik que no espere el 'once', sino que devuelva el último valor del caché
+                    
+                    const traffic = await conn.write('/interface/monitor-traffic', [
+                        `=interface=${nombrePuerto}`,
+                        '=once=',
+                        '=duration=1' // 🔥 EL SECRETO: Le decimos al MikroTik que piense por 1 segundo antes de escupir el dato
+                    ]);
+                    
+                    if (traffic && traffic.length > 0) {
+                        sumaRxBits += parseFloat(traffic[0]['rx-bits-per-second']) || 0;
+                    }
                 }
             } catch (error) {
-                // PARCHE: Solo avisamos en consola, no enviamos "res.status" aquí para evitar que choque con la respuesta final.
                 console.warn(`Aviso Tráfico [Puerto: ${nombrePuerto}]:`, error.message);
             }
         }

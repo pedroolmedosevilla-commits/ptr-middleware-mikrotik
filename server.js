@@ -250,27 +250,33 @@ app.post('/api/antenas/status', verificarGafetePTR, (req, res) => {
         timeout: 3000
     });
 
-    // === EL DICCIONARIO DE GOBERNANZA (OIDs por fabricante) ===
-    const diccionarioOIDs = {
-        ubiquiti: {
-            nombre: "1.3.6.1.2.1.1.5.0",             
-            ccq: "1.3.6.1.4.1.41112.1.4.5.1.7.1",    
-            senal: "1.3.6.1.4.1.41112.1.4.5.1.5.1",  
-            ruido: "1.3.6.1.4.1.41112.1.4.5.1.8.1"   
-        },
-        mimosa: {
-            nombre: "1.3.6.1.2.1.1.5.0",             // Universal
-            ccq: "1.3.6.1.4.1.43356.2.1.2.9.1.2",    // *Fer: Reemplazar con el OID real de Mimosa
-            senal: "1.3.6.1.4.1.43356.2.1.2.9.1.3",  // *Fer: Reemplazar con el OID real de Mimosa
-            ruido: "1.3.6.1.4.1.43356.2.1.2.9.1.4"   // *Fer: Reemplazar con el OID real de Mimosa
-        },
-        cambium: {
-            nombre: "1.3.6.1.2.1.1.5.0",             // Universal
-            ccq: "1.3.6.1.4.1.161.19.3.2.2.19.0",    // *Fer: Reemplazar con el OID real de Cambium
-            senal: "1.3.6.1.4.1.161.19.3.2.2.22.0",  // *Fer: Reemplazar con el OID real de Cambium
-            ruido: "1.3.6.1.4.1.161.19.3.2.2.21.0"   // *Fer: Reemplazar con el OID real de Cambium
-        }
-    };
+   // === EL DICCIONARIO DE GOBERNANZA (OIDs por fabricante) ===
+   const diccionarioOIDs = {
+    ubiquiti: {
+        nombre: "1.3.6.1.2.1.1.5.0",             
+        ccq: "1.3.6.1.4.1.41112.1.4.5.1.7.1",    
+        senal: "1.3.6.1.4.1.41112.1.4.5.1.5.1",  
+        ruido: "1.3.6.1.4.1.41112.1.4.5.1.8.1"   
+    },
+    ubiquiti_ac: {
+        nombre: "1.3.6.1.2.1.1.5.0",             
+        ccq: "1.3.6.1.4.1.41112.1.4.7.1.4.1",   
+        senal: "1.3.6.1.4.1.41112.1.4.7.1.3.1", 
+        ruido: "1.3.6.1.4.1.41112.1.4.7.1.6.1"  
+    },
+    mimosa: {
+        nombre: "1.3.6.1.2.1.1.5.0",             
+        ccq: "1.3.6.1.4.1.43356.2.1.2.9.1.2",    
+        senal: "1.3.6.1.4.1.43356.2.1.2.9.1.3",  
+        ruido: "1.3.6.1.4.1.43356.2.1.2.9.1.4"   
+    },
+    cambium: {
+        nombre: "1.3.6.1.2.1.1.5.0",             
+        ccq: "1.3.6.1.4.1.161.19.3.2.2.19.0",    
+        senal: "1.3.6.1.4.1.161.19.3.2.2.22.0",  
+        ruido: "1.3.6.1.4.1.161.19.3.2.2.21.0"   
+    }
+};
 
     // Seleccionamos los OIDs dependiendo de la marca que mandó el Dashboard
     const oidsUsar = diccionarioOIDs[marca.toLowerCase()] || diccionarioOIDs['ubiquiti'];

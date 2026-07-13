@@ -115,7 +115,7 @@ app.post('/api/mikrotik/reactivar', verificarGafetePTR, async (req, res) => {
 });
 
 // ============================================================================
-// D) ENDPOINT: TELEMETRÍA DEL DASHBOARD (MULTI-PUERTO BLINDADO)
+// D) ENDPOINT: TELEMETRÍA DEL DASHBOARD (AHORA SOPORTA SIMPLE QUEUES)
 // ============================================================================
 app.post('/api/mikrotik/status', verificarGafetePTR, async (req, res) => {
     const { ipRouter, puertoWan = 'ether1' } = req.body; 
@@ -146,7 +146,7 @@ app.post('/api/mikrotik/status', verificarGafetePTR, async (req, res) => {
            totalPPPoE = activosReales.length;
        } catch (e) { console.warn("Aviso Clientes (ARP):", e.message); }
 
-        // --- 3. LECTURA DE TRÁFICO (VÍA ESTADÍSTICAS SEGURAS) ---
+        // --- 3. LECTURA DE TRÁFICO (INTERFAZ FÍSICA O SIMPLE QUEUE) ---
         let sumaRxBits = 0;
         const puertos = puertoWan.split(',');
         
@@ -155,28 +155,41 @@ app.post('/api/mikrotik/status', verificarGafetePTR, async (req, res) => {
             if(!nombrePuerto) continue;
             
             try {
-                // 1. Pedimos el tráfico una vez de forma rápida y segura
-                let traffic = await conn.write('/interface/monitor-traffic', [
-                    `=interface=${nombrePuerto}`,
-                    '=once='
-                ]);
-                
-                let rxBits = traffic && traffic.length > 0 ? (parseFloat(traffic[0]['rx-bits-per-second']) || 0) : 0;
+                let rxBits = 0;
 
-                // 🔥 EL PARCHE MAESTRO (Doble Toque): Si el MikroTik nos escupe un 0 prematuro 
-                // por el micro-retraso, esperamos 200 milisegundos exactos y reconfirmamos.
-                if (rxBits === 0) {
-                    await new Promise(resolve => setTimeout(resolve, 200));
-                    traffic = await conn.write('/interface/monitor-traffic', [
-                        `=interface=${nombrePuerto}`,
-                        '=once='
+                // A) Si el nombre parece un puerto físico (ether, sfp, wlan, vlan)...
+                if (nombrePuerto.match(/^(ether|sfp|wlan|vlan)/i)) {
+                    let traffic = await conn.write('/interface/monitor-traffic', [
+                        `=interface=${nombrePuerto}`, '=once='
                     ]);
+                    
                     rxBits = traffic && traffic.length > 0 ? (parseFloat(traffic[0]['rx-bits-per-second']) || 0) : 0;
+
+                    // El parche anti-micro-retraso
+                    if (rxBits === 0) {
+                        await new Promise(resolve => setTimeout(resolve, 200));
+                        traffic = await conn.write('/interface/monitor-traffic', [
+                            `=interface=${nombrePuerto}`, '=once='
+                        ]);
+                        rxBits = traffic && traffic.length > 0 ? (parseFloat(traffic[0]['rx-bits-per-second']) || 0) : 0;
+                    }
+                } 
+                // B) Si no, asumimos que es un "Simple Queue" (Ej: ANCHO DE BANDA TOTAL)
+                else {
+                    const queue = await conn.write('/queue/simple/print', [
+                        `?name=${nombrePuerto}`
+                    ]);
+                    
+                    if (queue && queue.length > 0) {
+                        const rateString = queue[0].rate || "0/0";
+                        const downloadBits = rateString.split('/')[1]; // Tomamos la segunda parte
+                        rxBits = parseFloat(downloadBits) || 0;
+                    }
                 }
                 
                 sumaRxBits += rxBits;
             } catch (error) {
-                console.warn(`Aviso Tráfico [Puerto: ${nombrePuerto}]:`, error.message);
+                console.warn(`Aviso Tráfico [Puerto/Queue: ${nombrePuerto}]:`, error.message);
             }
         }
         
@@ -204,26 +217,37 @@ app.post('/api/mikrotik/status', verificarGafetePTR, async (req, res) => {
     } catch (error) {
         console.error("Error Crítico de Conexión:", error.message);
         
-        // 🔥 EL SEGURO DE VIDA: Forzamos el cierre de la conexión fantasma aunque haya fallado, 
-        // para que MikroTik no nos bloquee por exceso de sesiones.
+        // 🔥 EL SEGURO DE VIDA
         try { if(conn) conn.close(); } catch(e) {}
         
         res.status(200).json({ estatus: 'error', mensaje: 'Falla al conectar.' });
     }
 });
+
 // ============================================================================
-// E) ENDPOINT: LECTURA HÍBRIDA DE ANTENAS (MULTI-MARCA SNMP)
+// E) ENDPOINT: LECTURA HÍBRIDA DE ANTENAS (MULTI-MARCA, MULTI-VERSIÓN Y NAT)
 // ============================================================================
 app.post('/api/antenas/status', verificarGafetePTR, (req, res) => {
-    // AHORA RECIBIMOS LA MARCA DESDE EL DASHBOARD (Por defecto Ubiquiti)
-    const { ipAntena, comunidad = 'public', marca = 'ubiquiti' } = req.body;
+    // AHORA RECIBIMOS LA MARCA Y LA VERSIÓN DESDE EL DASHBOARD
+    const { ipAntena, comunidad = 'public', marca = 'ubiquiti', version = 'v2c' } = req.body;
 
     if (!ipAntena) {
         return res.status(400).json({ estatus: 'error', mensaje: 'Falta la IP de la Antena.' });
     }
 
-    const session = snmp.createSession(ipAntena, comunidad, {
-        port: 161, retries: 1, timeout: 3000, version: snmp.Version1
+    // SOPORTE PARA NAT (Extraer el puerto personalizado si existe)
+    const ipLimpiada = ipAntena.split(':')[0];
+    const puertoSnmp = ipAntena.includes(':') ? parseInt(ipAntena.split(':')[1], 10) : 161;
+
+    // TRADUCIR LA VERSIÓN DE REACT A FORMATO NET-SNMP
+    const snmpVersion = version === 'v1' ? snmp.Version1 : snmp.Version2c;
+
+    // CREAMOS LA SESIÓN CON LOS PARÁMETROS DINÁMICOS
+    const session = snmp.createSession(ipLimpiada, comunidad, {
+        port: puertoSnmp,
+        version: snmpVersion,
+        retries: 1, 
+        timeout: 3000
     });
 
     // === EL DICCIONARIO DE GOBERNANZA (OIDs por fabricante) ===
@@ -277,6 +301,35 @@ app.post('/api/antenas/status', verificarGafetePTR, (req, res) => {
         res.json({ estatus: 'exito', datos: datosAntena });
     });
 });
+
+// ============================================================================
+// F) ENDPOINT: LISTAR CLIENTES PPPoE ACTIVOS (PARA MODAL EN DASHBOARD)
+// ============================================================================
+app.post('/api/mikrotik/clientes-activos', verificarGafetePTR, async (req, res) => {
+    const { ipRouter } = req.body;
+
+    if (!ipRouter) return res.status(400).json({ estatus: 'error', mensaje: 'Falta IP del Router' });
+
+    const conn = conectarMikroTik(ipRouter);
+    try {
+        await conn.connect();
+        const activos = await conn.write('/ppp/active/print');
+        
+        // Limpiamos los datos para mandar solo lo necesario a React
+        const listaLimpia = activos.map(c => ({
+            nombre: c.name || 'Desconocido',
+            ip: c.address || 'Sin IP',
+            uptime: c.uptime || '0s'
+        }));
+
+        conn.close();
+        res.json({ estatus: 'exito', clientes: listaLimpia });
+    } catch (error) {
+        if(conn) conn.close();
+        res.status(500).json({ estatus: 'error', mensaje: 'Falla al extraer clientes', detalle: error.message });
+    }
+});
+
 // === DECLARAMOS EL PUERTO PARA QUE RENDER LO INYECTE ===
 const PORT = process.env.PORT || 3000;
 

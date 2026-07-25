@@ -67,22 +67,51 @@ app.post('/api/mikrotik/reactivar', async (req, res) => {
     }
 });
 
-// Telemetría (La que pide el Dashboard cada 3 segundos)
-app.post('/api/mikrotik/status', async (req, res) => {
-    const { ipRouter } = req.body;
+// Endpoint de Telemetría (VERSIÓN FULL SENSORES)
+app.post('/api/network/status', async (req, res) => {
+    const { ipRouter, puertoWan = 'ether1' } = req.body;
     const conn = conectarMikroTik(ipRouter);
+
     try {
         await conn.connect();
+        
+        // 1. Recursos base (CPU/RAM)
         const recursos = await conn.write('/system/resource/print');
-        conn.close();
-        res.json({
+        
+        // 2. Lectura de Temperatura
+        let temperaturaReal = 0;
+        try {
+            const salud = await conn.write('/system/health/print');
+            if (salud && salud.length > 0) {
+                const sensor = salud.find(s => s.name && s.name.includes('temperature'));
+                temperaturaReal = sensor ? parseFloat(sensor.value) : (salud[0].temperature || 0);
+            }
+        } catch (e) { console.warn("Sensor temp no disponible"); }
+
+        // 3. Lectura de Tráfico Real (Rx)
+        let rxMbps = 0;
+        try {
+            const traffic = await conn.write('/interface/monitor-traffic', [
+                `=interface=${puertoWan}`, '=once='
+            ]);
+            if (traffic && traffic.length > 0) {
+                rxMbps = (parseFloat(traffic[0]['rx-bits-per-second']) / 1000000).toFixed(1);
+            }
+        } catch (e) { console.warn("Error leyendo tráfico"); }
+
+        const data = {
             estatus: 'exito',
             data: {
-                cpu: recursos[0]['cpu-load'],
+                cpu: recursos[0]['cpu-load'] || 0,
                 ram: ((parseInt(recursos[0]['total-memory']) - parseInt(recursos[0]['free-memory'])) / parseInt(recursos[0]['total-memory']) * 100).toFixed(1),
-                activos: 0 
+                temp: temperaturaReal,
+                rx: rxMbps,
+                activos: 0 // Se puede activar con /ppp/active/print si lo requieres
             }
-        });
+        };
+        
+        conn.close();
+        res.json(data);
     } catch (error) {
         if(conn) conn.close();
         res.json({ estatus: 'error', mensaje: 'Router Offline' });

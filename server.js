@@ -1,8 +1,7 @@
 /**
  * ============================================================================
- * CONECTA T - BACKEND CENTRAL DE GOBERNANZA (V2.2 - PRODUCCIÓN)
+ * CONECTA T - BACKEND CENTRAL DE GOBERNANZA (V2.3 - ESTABLE)
  * ============================================================================
- * Servidor seguro con compatibilidad para apps legacy y nuevas.
  */
 
 require('dotenv').config();
@@ -12,21 +11,27 @@ const admin = require('firebase-admin');
 const { RouterOSAPI } = require('node-routeros');
 const snmp = require('net-snmp');
 
-// --- 1. INICIALIZACIÓN DE FIREBASE ADMIN (BÚNKER DE SEGURIDAD) ---
-try {
-    const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
-    admin.initializeApp({
-        credential: admin.credential.cert(serviceAccount)
-    });
-    console.log("✅ Firebase Admin SDK vinculado correctamente.");
-} catch (e) {
-    console.error("❌ Error crítico: No se pudo inicializar Firebase Admin.", e.message);
-}
-
-const db = admin.firestore();
 const app = express();
 app.use(express.json());
 app.use(cors());
+
+// --- 1. INICIALIZACIÓN DE FIREBASE ADMIN (BÚNKER DE SEGURIDAD) ---
+let db; // Declaramos la variable de la base de datos
+
+try {
+    if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+        const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+        admin.initializeApp({
+            credential: admin.credential.cert(serviceAccount)
+        });
+        db = admin.firestore(); // 🛡️ Solo se activa si la inicialización es exitosa
+        console.log("✅ Firebase Admin SDK vinculado correctamente.");
+    } else {
+        console.warn("⚠️ Advertencia: FIREBASE_SERVICE_ACCOUNT no detectada. Modo Red únicamente.");
+    }
+} catch (e) {
+    console.error("❌ Error crítico en Firebase Admin:", e.message);
+}
 
 // --- 2. MOTOR DE CONEXIÓN MIKROTIK ---
 const conectarMikroTik = (ipRouter) => {
@@ -44,12 +49,11 @@ const conectarMikroTik = (ipRouter) => {
 };
 
 // ============================================================================
-// 3. RUTAS DE COMPATIBILIDAD (Para no romper tus apps actuales)
+// 3. RUTAS DE COMPATIBILIDAD
 // ============================================================================
 
 app.get('/', (req, res) => res.send('Servidor CONECTA T: Operativo y Blindado.'));
 
-// Reactivación (La que usa tu App Mostrador y NOC actual)
 app.post('/api/mikrotik/reactivar', async (req, res) => {
     const { ipCliente, ipRouter } = req.body;
     const conn = conectarMikroTik(ipRouter);
@@ -67,18 +71,13 @@ app.post('/api/mikrotik/reactivar', async (req, res) => {
     }
 });
 
-// Endpoint de Telemetría (VERSIÓN FULL SENSORES)
 app.post('/api/network/status', async (req, res) => {
     const { ipRouter, puertoWan = 'ether1' } = req.body;
     const conn = conectarMikroTik(ipRouter);
-
     try {
         await conn.connect();
-        
-        // 1. Recursos base (CPU/RAM)
         const recursos = await conn.write('/system/resource/print');
         
-        // 2. Lectura de Temperatura
         let temperaturaReal = 0;
         try {
             const salud = await conn.write('/system/health/print');
@@ -86,32 +85,27 @@ app.post('/api/network/status', async (req, res) => {
                 const sensor = salud.find(s => s.name && s.name.includes('temperature'));
                 temperaturaReal = sensor ? parseFloat(sensor.value) : (salud[0].temperature || 0);
             }
-        } catch (e) { console.warn("Sensor temp no disponible"); }
+        } catch (e) {}
 
-        // 3. Lectura de Tráfico Real (Rx)
         let rxMbps = 0;
         try {
-            const traffic = await conn.write('/interface/monitor-traffic', [
-                `=interface=${puertoWan}`, '=once='
-            ]);
+            const traffic = await conn.write('/interface/monitor-traffic', [`=interface=${puertoWan}`, '=once=']);
             if (traffic && traffic.length > 0) {
                 rxMbps = (parseFloat(traffic[0]['rx-bits-per-second']) / 1000000).toFixed(1);
             }
-        } catch (e) { console.warn("Error leyendo tráfico"); }
+        } catch (e) {}
 
-        const data = {
+        conn.close();
+        res.json({
             estatus: 'exito',
             data: {
                 cpu: recursos[0]['cpu-load'] || 0,
                 ram: ((parseInt(recursos[0]['total-memory']) - parseInt(recursos[0]['free-memory'])) / parseInt(recursos[0]['total-memory']) * 100).toFixed(1),
                 temp: temperaturaReal,
                 rx: rxMbps,
-                activos: 0 // Se puede activar con /ppp/active/print si lo requieres
+                activos: 0 
             }
-        };
-        
-        conn.close();
-        res.json(data);
+        });
     } catch (error) {
         if(conn) conn.close();
         res.json({ estatus: 'error', mensaje: 'Router Offline' });
@@ -119,12 +113,13 @@ app.post('/api/network/status', async (req, res) => {
 });
 
 // ============================================================================
-// 4. NUEVAS RUTAS DE SEGURIDAD (Para las apps que vamos a actualizar)
+// 4. NUEVAS RUTAS DE SEGURIDAD
 // ============================================================================
 
-// Login Blindado: Valida el PIN sin exponer la base de datos
 app.post('/api/auth/login', async (req, res) => {
     const { pin } = req.body;
+    if (!db) return res.status(503).json({ estatus: 'error', mensaje: 'Servicio de Matriz no disponible temporalmente' });
+
     try {
         const rolesRef = db.doc("artifacts/conecta-t-ecosistema/public/data/Configuracion/RolesAccesos");
         const docSnap = await rolesRef.get();
@@ -132,7 +127,6 @@ app.post('/api/auth/login', async (req, res) => {
         const usuario = roles[pin];
 
         if (usuario) {
-            // Registramos el acceso en la auditoría
             await db.collection("artifacts/conecta-t-ecosistema/public/data/AuditoriaAccesos").add({
                 usuario: usuario.nombre,
                 rol: usuario.rol,
@@ -143,23 +137,17 @@ app.post('/api/auth/login', async (req, res) => {
 
             res.json({ 
                 estatus: 'exito', 
-                perfil: { 
-                    nombre: usuario.nombre, 
-                    rol: usuario.rol, 
-                    sector: usuario.sector || 'Todos' 
-                } 
+                perfil: { nombre: usuario.nombre, rol: usuario.rol, sector: usuario.sector || 'Todos' } 
             });
         } else {
             res.status(401).json({ estatus: 'error', mensaje: 'PIN Incorrecto' });
         }
     } catch (error) {
-        console.error("Error en Matriz:", error);
         res.status(500).json({ estatus: 'error', mensaje: 'Error de conexión con La Matriz' });
     }
 });
 
-// --- INICIO DEL SERVIDOR ---
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`🚀 BACKEND CONECTA T V2.2 LISTO EN PUERTO ${PORT}`);
+    console.log(`🚀 BACKEND CONECTA T V2.3 LISTO EN PUERTO ${PORT}`);
 });

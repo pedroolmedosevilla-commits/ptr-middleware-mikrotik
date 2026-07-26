@@ -1,6 +1,6 @@
 /**
  * ============================================================================
- * CONECTA T - BACKEND CENTRAL DE GOBERNANZA (V2.4 - RUTAS ALINEADAS)
+ * CONECTA T - BACKEND CENTRAL DE GOBERNANZA (V2.5 - TELEMETRÍA TOTAL)
  * ============================================================================
  */
 
@@ -13,6 +13,7 @@ const snmp = require('net-snmp');
 
 const app = express();
 app.use(express.json());
+// CORS Abierto para permitir la conexión desde el Dashboard web
 app.use(cors());
 
 // --- 1. INICIALIZACIÓN DE FIREBASE ADMIN (BÚNKER DE SEGURIDAD) ---
@@ -27,7 +28,7 @@ try {
         db = admin.firestore(); 
         console.log("✅ Firebase Admin SDK vinculado correctamente.");
     } else {
-        console.warn("⚠️ Advertencia: FIREBASE_SERVICE_ACCOUNT no detectada. Modo Red únicamente.");
+        console.warn("⚠️ Advertencia: FIREBASE_SERVICE_ACCOUNT no detectada en Render.");
     }
 } catch (e) {
     console.error("❌ Error crítico en Firebase Admin:", e.message);
@@ -49,12 +50,11 @@ const conectarMikroTik = (ipRouter) => {
 };
 
 // ============================================================================
-// 3. RUTAS OPERATIVAS (ALINEADAS CON FRONTEND TITÁN)
+// 3. RUTAS OPERATIVAS (MIKROTIK API)
 // ============================================================================
 
 app.get('/', (req, res) => res.send('Servidor CONECTA T: Operativo y Blindado.'));
 
-// 🚀 RUTA 1: REACTIVAR SERVICIO
 app.post('/api/mikrotik/reactivar', async (req, res) => {
     const { ipCliente, ipRouter } = req.body;
     const conn = conectarMikroTik(ipRouter);
@@ -72,7 +72,6 @@ app.post('/api/mikrotik/reactivar', async (req, res) => {
     }
 });
 
-// 🚀 RUTA 2: SUSPENDER SERVICIO (¡NUEVO!)
 app.post('/api/mikrotik/suspender', async (req, res) => {
     const { ipCliente, ipRouter, comentario } = req.body;
     const conn = conectarMikroTik(ipRouter);
@@ -91,7 +90,7 @@ app.post('/api/mikrotik/suspender', async (req, res) => {
     }
 });
 
-// 🚀 RUTA 3: TELEMETRÍA (CORREGIDA LA RUTA A /api/mikrotik/status)
+// 🚀 RUTAS DE TELEMETRÍA (CON CONTADOR PPPoE REAL)
 app.post('/api/mikrotik/status', async (req, res) => {
     const { ipRouter, puertoWan = 'ether1' } = req.body;
     const conn = conectarMikroTik(ipRouter);
@@ -116,6 +115,13 @@ app.post('/api/mikrotik/status', async (req, res) => {
             }
         } catch (e) {}
 
+        // 🔥 CONTADOR DE CLIENTES ACTIVOS (PPPoE)
+        let clientesActivos = 0;
+        try {
+            const ppp = await conn.write('/ppp/active/print');
+            clientesActivos = ppp.length;
+        } catch (e) {}
+
         conn.close();
         res.json({
             estatus: 'exito',
@@ -124,7 +130,7 @@ app.post('/api/mikrotik/status', async (req, res) => {
                 ram: ((parseInt(recursos[0]['total-memory']) - parseInt(recursos[0]['free-memory'])) / parseInt(recursos[0]['total-memory']) * 100).toFixed(1),
                 temp: temperaturaReal,
                 rx: rxMbps,
-                activos: 0 
+                activos: clientesActivos 
             }
         });
     } catch (error) {
@@ -134,12 +140,47 @@ app.post('/api/mikrotik/status', async (req, res) => {
 });
 
 // ============================================================================
-// 4. RUTAS DE SEGURIDAD
+// 4. RUTAS DE RADIOFRECUENCIA (NUEVO MÓDULO SNMP PARA ANTENAS)
 // ============================================================================
+app.post('/api/antenas/status', (req, res) => {
+    const { ipAntena, comunidad = 'public', version = 'v2c' } = req.body;
+    
+    // Si es IP local, el servidor en la nube de Render no podrá alcanzarla.
+    if (ipAntena.startsWith('192.168.') || ipAntena.startsWith('10.')) {
+        return res.json({ estatus: 'error', mensaje: 'IP Privada inalcanzable desde la Nube' });
+    }
 
+    const snmpVersion = version === 'v1' ? snmp.Version1 : snmp.Version2c;
+    const session = snmp.createSession(ipAntena, comunidad, { version: snmpVersion, timeout: 3000 });
+
+    // OIDs Estándar (Nombre y Uptime). CCQ y Ruido dependen de la MIB específica de Ubiquiti/Mimosa.
+    const oids = ["1.3.6.1.2.1.1.5.0", "1.3.6.1.2.1.1.3.0"]; 
+
+    session.get(oids, (error, varbinds) => {
+        if (error) {
+            res.json({ estatus: 'error', mensaje: 'Timeout SNMP' });
+        } else {
+            res.json({
+                estatus: 'exito',
+                datos: {
+                    nombre: varbinds[0] ? varbinds[0].value.toString() : 'Antena',
+                    uptime: varbinds[1] ? (parseInt(varbinds[1].value) / 100).toFixed(0) : '0',
+                    ccq: 0, // Requiere MIB de fabricante
+                    senal: 0, 
+                    ruido: 0 
+                }
+            });
+        }
+        session.close();
+    });
+});
+
+// ============================================================================
+// 5. RUTAS DE SEGURIDAD
+// ============================================================================
 app.post('/api/auth/login', async (req, res) => {
     const { pin } = req.body;
-    if (!db) return res.status(503).json({ estatus: 'error', mensaje: 'Servicio de Matriz no disponible temporalmente' });
+    if (!db) return res.status(503).json({ estatus: 'error', mensaje: 'Bóveda Desconectada' });
 
     try {
         const rolesRef = db.doc("artifacts/conecta-t-ecosistema/public/data/Configuracion/RolesAccesos");
@@ -156,19 +197,16 @@ app.post('/api/auth/login', async (req, res) => {
                 dispositivo: req.headers['user-agent']
             });
 
-            res.json({ 
-                estatus: 'exito', 
-                perfil: { nombre: usuario.nombre, rol: usuario.rol, sector: usuario.sector || 'Todos' } 
-            });
+            res.json({ estatus: 'exito', perfil: { nombre: usuario.nombre, rol: usuario.rol, sector: usuario.sector || 'Todos' } });
         } else {
             res.status(401).json({ estatus: 'error', mensaje: 'PIN Incorrecto' });
         }
     } catch (error) {
-        res.status(500).json({ estatus: 'error', mensaje: 'Error de conexión con La Matriz' });
+        res.status(500).json({ estatus: 'error', mensaje: 'Error de Red' });
     }
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`🚀 BACKEND CONECTA T V2.4 LISTO EN PUERTO ${PORT}`);
+    console.log(`🚀 BACKEND CONECTA T V2.5 LISTO EN PUERTO ${PORT}`);
 });

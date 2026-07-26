@@ -1,6 +1,6 @@
 /**
  * ============================================================================
- * CONECTA T - BACKEND CENTRAL DE GOBERNANZA (V2.3 - ESTABLE)
+ * CONECTA T - BACKEND CENTRAL DE GOBERNANZA (V2.4 - RUTAS ALINEADAS)
  * ============================================================================
  */
 
@@ -16,7 +16,7 @@ app.use(express.json());
 app.use(cors());
 
 // --- 1. INICIALIZACIÓN DE FIREBASE ADMIN (BÚNKER DE SEGURIDAD) ---
-let db; // Declaramos la variable de la base de datos
+let db; 
 
 try {
     if (process.env.FIREBASE_SERVICE_ACCOUNT) {
@@ -24,7 +24,7 @@ try {
         admin.initializeApp({
             credential: admin.credential.cert(serviceAccount)
         });
-        db = admin.firestore(); // 🛡️ Solo se activa si la inicialización es exitosa
+        db = admin.firestore(); 
         console.log("✅ Firebase Admin SDK vinculado correctamente.");
     } else {
         console.warn("⚠️ Advertencia: FIREBASE_SERVICE_ACCOUNT no detectada. Modo Red únicamente.");
@@ -49,11 +49,12 @@ const conectarMikroTik = (ipRouter) => {
 };
 
 // ============================================================================
-// 3. RUTAS DE COMPATIBILIDAD
+// 3. RUTAS OPERATIVAS (ALINEADAS CON FRONTEND TITÁN)
 // ============================================================================
 
 app.get('/', (req, res) => res.send('Servidor CONECTA T: Operativo y Blindado.'));
 
+// 🚀 RUTA 1: REACTIVAR SERVICIO
 app.post('/api/mikrotik/reactivar', async (req, res) => {
     const { ipCliente, ipRouter } = req.body;
     const conn = conectarMikroTik(ipRouter);
@@ -71,7 +72,27 @@ app.post('/api/mikrotik/reactivar', async (req, res) => {
     }
 });
 
-app.post('/api/network/status', async (req, res) => {
+// 🚀 RUTA 2: SUSPENDER SERVICIO (¡NUEVO!)
+app.post('/api/mikrotik/suspender', async (req, res) => {
+    const { ipCliente, ipRouter, comentario } = req.body;
+    const conn = conectarMikroTik(ipRouter);
+    try {
+        await conn.connect();
+        await conn.write('/ip/firewall/address-list/add', [
+            `=address=${ipCliente}`, 
+            `=list=MOROSOS`,
+            `=comment=${comentario || 'Suspendido por App Titán'}`
+        ]);
+        conn.close();
+        res.json({ estatus: 'exito', mensaje: 'Servicio suspendido con éxito' });
+    } catch (error) {
+        if(conn) conn.close();
+        res.status(500).json({ estatus: 'error', mensaje: error.message });
+    }
+});
+
+// 🚀 RUTA 3: TELEMETRÍA (CORREGIDA LA RUTA A /api/mikrotik/status)
+app.post('/api/mikrotik/status', async (req, res) => {
     const { ipRouter, puertoWan = 'ether1' } = req.body;
     const conn = conectarMikroTik(ipRouter);
     try {
@@ -113,7 +134,7 @@ app.post('/api/network/status', async (req, res) => {
 });
 
 // ============================================================================
-// 4. NUEVAS RUTAS DE SEGURIDAD
+// 4. RUTAS DE SEGURIDAD
 // ============================================================================
 
 app.post('/api/auth/login', async (req, res) => {
@@ -149,5 +170,5 @@ app.post('/api/auth/login', async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`🚀 BACKEND CONECTA T V2.3 LISTO EN PUERTO ${PORT}`);
+    console.log(`🚀 BACKEND CONECTA T V2.4 LISTO EN PUERTO ${PORT}`);
 });
